@@ -29,6 +29,10 @@ export default function App() {
   const [data, setData] = useState<ChatResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -38,7 +42,7 @@ export default function App() {
 
     try {
       // Assumes your FastAPI backend is running on port 8000
-      const response = await fetch('http://localhost:8000/api/chat', {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query }),
