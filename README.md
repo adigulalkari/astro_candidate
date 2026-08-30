@@ -6,6 +6,8 @@ This full-stack application provides an interactive LLM-powered research agent, 
 
 ---
 
+![Screenshot](image.png)
+
 ## 🏗 System Architecture
 
 * **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Lucide Icons.
