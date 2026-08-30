@@ -14,10 +14,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS for local development
+# Configure CORS for local development and production
+# Set the FRONTEND_URL environment variable to your deployed Vercel frontend domain
+# e.g. FRONTEND_URL=https://astro-candidate.vercel.app
+frontend_origin = os.environ.get("FRONTEND_URL")
+allow_origins = [frontend_origin] if frontend_origin else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for local build ease
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
