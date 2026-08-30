@@ -1,0 +1,10 @@
+node_modules/
+Neo4j_creds.txt
+
+.env
+
+.pytest_cache
+
+__pycache__/
+
+venv
