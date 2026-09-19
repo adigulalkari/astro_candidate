@@ -1,148 +1,222 @@
-import os
-import json
-import sqlite3
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, precision_score, recall_score
-import joblib
+"""Trains the exoplanet habitability ranking model.
 
-# Attempt to import and load XGBoost, falling back to scikit-learn if OpenMP is missing
-USE_XGB = False
+The label is a domain-defined "Earth-like reference profile" (radius, equilibrium
+temperature, insolation and distance close to Earth's), not a human-annotated
+class, so there is no ambiguity about ground truth. The hard part is that
+positive examples are rare (a few dozen out of ~14k rows after data_pipeline's
+KOI/TOI catalog merge), so this script leans on stratified cross-validation and
+a randomized hyperparameter search scored on average precision (better suited
+to rare-positive problems than plain accuracy or ROC-AUC) instead of a single
+train/test split, which would be too noisy to trust with so few positives.
+"""
+import json
+import os
+import sqlite3
+
+import joblib
+import numpy as np
+import pandas as pd
+from scipy.stats import randint, uniform
+from sklearn.metrics import average_precision_score, precision_score, recall_score, roc_auc_score
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, train_test_split
+from sklearn.utils.class_weight import compute_sample_weight
+
+from feature_engineering import FEATURE_COLUMNS
+
+PROCESSED_DIR = "data/processed"
+PARQUET_PATH = os.path.join(PROCESSED_DIR, "planets.parquet")
+DB_PATH = os.path.join(PROCESSED_DIR, "planets.db")
+MODEL_DIR = "models"
+XGB_MODEL_PATH = os.path.join(MODEL_DIR, "exoplanet_ranker.json")
+SKL_MODEL_PATH = os.path.join(MODEL_DIR, "exoplanet_ranker.joblib")
+META_PATH = os.path.join(MODEL_DIR, "model_meta.json")
+
+# Physical constraints for a temperate, Earth-sized planet around an M/K/G star.
+# Distance is treated as "pass" when unknown (candidate catalogs like KOI don't
+# report it) rather than excluding the row, since intrinsic habitability doesn't
+# depend on how far away we happen to be from the planet.
+RADIUS_RANGE_EARTH = (0.5, 1.5)
+EQUILIBRIUM_TEMP_RANGE_K = (200.0, 320.0)
+INSOLATION_RANGE_EARTH = (0.2, 2.2)
+MAX_FOLLOWUP_DISTANCE_PC = 150.0
+
+RANDOM_STATE = 42
+CV_FOLDS = 5
+SEARCH_ITERATIONS = 40
+
 try:
     import xgboost as xgb
-    # Test if we can initialize a model (checks if shared libraries load successfully)
-    test_model = xgb.XGBClassifier()
+
+    xgb.XGBClassifier()  # confirms the shared library actually loads
     USE_XGB = True
     print("[ML Training] Successfully loaded XGBoost. Will use XGBoost for candidate ranking.")
 except Exception as e:
+    USE_XGB = False
     print(f"[ML Training] XGBoost load failed ({e}). Falling back to scikit-learn GradientBoostingClassifier.")
     from sklearn.ensemble import GradientBoostingClassifier
 
-def train_exoplanet_ranker():
-    processed_dir = "data/processed"
-    parquet_path = os.path.join(processed_dir, "planets.parquet")
-    db_path = os.path.join(processed_dir, "planets.db")
-    model_dir = "models"
-    os.makedirs(model_dir, exist_ok=True)
-    
-    xgb_model_path = os.path.join(model_dir, "exoplanet_ranker.json")
-    skl_model_path = os.path.join(model_dir, "exoplanet_ranker.joblib")
-    meta_path = os.path.join(model_dir, "model_meta.json")
 
-    if not os.path.exists(parquet_path):
-        print(f"[ML Training] Error: Processed file does not exist at {parquet_path}. Run clean_data.py first.")
+def _define_target(df: pd.DataFrame) -> pd.Series:
+    radius_ok = df["pl_rade"].between(*RADIUS_RANGE_EARTH)
+    temp_ok = df["pl_eqt"].between(*EQUILIBRIUM_TEMP_RANGE_K)
+    insol_ok = df["pl_insol"].between(*INSOLATION_RANGE_EARTH)
+    distance_ok = df["sy_dist"].isna() | (df["sy_dist"] <= MAX_FOLLOWUP_DISTANCE_PC)
+    return (radius_ok & temp_ok & insol_ok & distance_ok).astype(int)
+
+
+def _build_xgb_search(scale_pos_weight: float) -> RandomizedSearchCV:
+    base_model = xgb.XGBClassifier(
+        eval_metric="logloss",
+        scale_pos_weight=scale_pos_weight,
+        random_state=RANDOM_STATE,
+    )
+    param_distributions = {
+        "n_estimators": randint(100, 500),
+        "max_depth": randint(3, 7),
+        "learning_rate": uniform(0.01, 0.19),
+        "subsample": uniform(0.6, 0.4),
+        "colsample_bytree": uniform(0.6, 0.4),
+        "min_child_weight": randint(1, 6),
+        "gamma": uniform(0.0, 0.5),
+    }
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    return RandomizedSearchCV(
+        base_model,
+        param_distributions,
+        n_iter=SEARCH_ITERATIONS,
+        scoring="average_precision",
+        cv=cv,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+    )
+
+
+def _build_sklearn_search() -> RandomizedSearchCV:
+    base_model = GradientBoostingClassifier(random_state=RANDOM_STATE)
+    param_distributions = {
+        "n_estimators": randint(100, 400),
+        "max_depth": randint(3, 6),
+        "learning_rate": uniform(0.01, 0.19),
+        "subsample": uniform(0.6, 0.4),
+    }
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    return RandomizedSearchCV(
+        base_model,
+        param_distributions,
+        n_iter=SEARCH_ITERATIONS,
+        scoring="average_precision",
+        cv=cv,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+    )
+
+
+def _fit_best_model(X_train: pd.DataFrame, y_train: pd.Series):
+    """Runs the cross-validated hyperparameter search and returns the best estimator."""
+    if USE_XGB:
+        scale_pos_weight = (len(y_train) - y_train.sum()) / (y_train.sum() + 1e-5)
+        search = _build_xgb_search(scale_pos_weight)
+        search.fit(X_train, y_train)
+    else:
+        search = _build_sklearn_search()
+        sample_weight = compute_sample_weight(class_weight="balanced", y=y_train)
+        search.fit(X_train, y_train, sample_weight=sample_weight)
+
+    print(f"[ML Training] Best CV average precision: {search.best_score_:.4f}")
+    print(f"[ML Training] Best params: {search.best_params_}")
+    return search.best_estimator_, search.best_params_, search.best_score_
+
+
+def _save_model(model) -> None:
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    if USE_XGB:
+        model.save_model(XGB_MODEL_PATH)
+        print(f"[ML Training] Saved XGBoost model to {XGB_MODEL_PATH}")
+    else:
+        joblib.dump(model, SKL_MODEL_PATH)
+        print(f"[ML Training] Saved scikit-learn model to {SKL_MODEL_PATH}")
+
+
+def _evaluate(model, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
+    y_pred_proba = model.predict_proba(X_test)[:, 1]
+    y_pred_binary = (y_pred_proba >= 0.5).astype(int)
+    metrics = {
+        "test_roc_auc": roc_auc_score(y_test, y_pred_proba),
+        "test_average_precision": average_precision_score(y_test, y_pred_proba),
+        "test_precision": precision_score(y_test, y_pred_binary, zero_division=0),
+        "test_recall": recall_score(y_test, y_pred_binary, zero_division=0),
+    }
+    for name, value in metrics.items():
+        print(f"[ML Training] {name}: {value:.4f}")
+    return metrics
+
+
+def _score_full_dataset(model, df: pd.DataFrame, X: pd.DataFrame) -> pd.DataFrame:
+    df["ml_score"] = model.predict_proba(X)[:, 1]
+    df.to_parquet(PARQUET_PATH, index=False)
+    print(f"[ML Training] Updated ml_score in Parquet: {PARQUET_PATH}")
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.executemany(
+            "UPDATE planets SET ml_score = ? WHERE pl_name = ?",
+            df[["ml_score", "pl_name"]].values.tolist(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[ML Training] SQLite database updated: {DB_PATH}")
+    return df
+
+
+def train_exoplanet_ranker() -> None:
+    if not os.path.exists(PARQUET_PATH):
+        print(f"[ML Training] Error: Processed file does not exist at {PARQUET_PATH}. Run clean_data.py first.")
         return
 
-    # Load clean data
-    df = pd.read_parquet(parquet_path)
+    df = pd.read_parquet(PARQUET_PATH)
     print(f"[ML Training] Loaded {len(df)} planets from parquet.")
 
-    # 1. Define Target Labels (Earth-like reference profile)
-    # Physical constraints for a temperate Earth-sized planet around M/K/G stars
-    radius_cond = (df["pl_rade"] >= 0.5) & (df["pl_rade"] <= 1.5)
-    temp_cond = (df["pl_eqt"] >= 200.0) & (df["pl_eqt"] <= 320.0)
-    insol_cond = (df["pl_insol"] >= 0.2) & (df["pl_insol"] <= 2.2)
-    dist_cond = df["sy_dist"] <= 150.0  # limit distance for follow-up feasibility
+    df["target"] = _define_target(df)
+    print(f"[ML Training] Defined target label. Positive instances: {df['target'].sum()} out of {len(df)}")
 
-    # Combine conditions to define the target reference set
-    df["target"] = 0
-    df.loc[radius_cond & temp_cond & insol_cond & dist_cond, "target"] = 1
-    num_positives = df["target"].sum()
-    print(f"[ML Training] Defined target label. Positive instances: {num_positives} out of {len(df)}")
-
-    # 2. Select Features
-    feature_cols = [
-        "pl_rade", "pl_bmasse", "pl_orbper", "pl_eqt", "pl_insol", "pl_orbeccen",
-        "st_teff", "st_rad", "st_mass", "st_lum", "st_met", "sy_dist", "sy_vmag", "sy_kmag",
-        "radius_ratio", "temp_similarity", "insol_similarity", "radius_similarity", "distance_score",
-        "stellar_temperature_normalized", "planet_star_radius_ratio"
-    ]
-
-    # Pre-process features: Scikit-learn cannot handle NaNs out-of-the-box like XGBoost.
-    # We will use a simple median imputation for scikit-learn fallback (XGBoost can keep NaNs).
-    X = df[feature_cols].copy()
+    X = df[FEATURE_COLUMNS].copy()
     y = df["target"]
 
     if not USE_XGB:
-        # Fill missing values with median for train/test split in sklearn
-        for col in feature_cols:
-            if X[col].isnull().any():
-                X[col] = X[col].fillna(X[col].median() if not pd.isna(X[col].median()) else 0.0)
+        # scikit-learn's GradientBoostingClassifier can't handle NaNs natively.
+        for col in FEATURE_COLUMNS:
+            median = X[col].median()
+            X[col] = X[col].fillna(median if not pd.isna(median) else 0.0)
 
-    # 3. Train/Test Split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
+    )
 
-    # 4. Train Model
-    if USE_XGB:
-        scale_weight = (len(y_train) - sum(y_train)) / (sum(y_train) + 1e-5)
-        model = xgb.XGBClassifier(
-            n_estimators=100,
-            max_depth=4,
-            learning_rate=0.05,
-            scale_pos_weight=scale_weight,
-            use_label_encoder=False,
-            eval_metric="logloss",
-            random_state=42
+    model, best_params, best_cv_score = _fit_best_model(X_train, y_train)
+    _save_model(model)
+    test_metrics = _evaluate(model, X_test, y_test)
+
+    with open(META_PATH, "w") as f:
+        json.dump(
+            {
+                "active_model": "xgboost" if USE_XGB else "sklearn",
+                "cv_folds": CV_FOLDS,
+                "cv_average_precision": best_cv_score,
+                "best_params": best_params,
+                "test_metrics": test_metrics,
+                "num_positive_labels": int(y.sum()),
+                "num_rows": int(len(df)),
+            },
+            f,
+            indent=2,
         )
-        print("[ML Training] Training XGBoost model...")
-        model.fit(X_train, y_train)
-        
-        # Save XGBoost
-        model.save_model(xgb_model_path)
-        print(f"[ML Training] Saved XGBoost model to {xgb_model_path}")
-    else:
-        model = GradientBoostingClassifier(
-            n_estimators=100,
-            max_depth=4,
-            learning_rate=0.05,
-            random_state=42
-        )
-        print("[ML Training] Training Scikit-learn GradientBoosting model...")
-        model.fit(X_train, y_train)
-        
-        # Save Scikit-learn model
-        joblib.dump(model, skl_model_path)
-        print(f"[ML Training] Saved Scikit-learn model to {skl_model_path}")
 
-    # Save metadata indicating which model is active
-    with open(meta_path, "w") as f:
-        json.dump({"active_model": "xgboost" if USE_XGB else "sklearn"}, f)
+    # Refit on the full dataset (train + test) with the tuned hyperparameters so the
+    # scores served by the API benefit from every labeled example, then score everyone.
+    model.fit(X, y)
+    _score_full_dataset(model, df, X)
 
-    # 5. Evaluate Model
-    y_pred_train = model.predict_proba(X_train)[:, 1]
-    y_pred_test = model.predict_proba(X_test)[:, 1]
-
-    train_auc = roc_auc_score(y_train, y_pred_train)
-    test_auc = roc_auc_score(y_test, y_pred_test)
-    
-    y_pred_binary = (y_pred_test >= 0.5).astype(int)
-    test_precision = precision_score(y_test, y_pred_binary, zero_division=0)
-    test_recall = recall_score(y_test, y_pred_binary, zero_division=0)
-
-    print(f"[ML Training] Train ROC-AUC: {train_auc:.4f}")
-    print(f"[ML Training] Test ROC-AUC: {test_auc:.4f}")
-    print(f"[ML Training] Test Precision: {test_precision:.4f}")
-    print(f"[ML Training] Test Recall: {test_recall:.4f}")
-
-    # 6. Predict ML Scores for the entire dataset
-    df["ml_score"] = model.predict_proba(X)[:, 1]
-
-    # Save updated dataframe to parquet
-    df.to_parquet(parquet_path, index=False)
-    print(f"[ML Training] Updated ml_score in Parquet: {parquet_path}")
-
-    # 7. Update SQLite Database with predicted ml_scores
-    print(f"[ML Training] Updating SQLite database {db_path}...")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Update the ml_score column
-    update_data = df[["ml_score", "pl_name"]].values.tolist()
-    cursor.executemany("UPDATE planets SET ml_score = ? WHERE pl_name = ?", update_data)
-    conn.commit()
-    conn.close()
-    print("[ML Training] SQLite database updated successfully.")
 
 if __name__ == "__main__":
     train_exoplanet_ranker()

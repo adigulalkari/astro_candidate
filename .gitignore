@@ -16,7 +16,8 @@ __pycache__/
 .env
 Neo4j_creds.txt
 
-# Data & Models 
-data/processed/
+# Data & Models
+# data/processed/ IS committed: it's the SQLite DB + parquet the deployed
+# backend serves from, and Render's build step does not regenerate it.
 data/raw/
 models/*.joblib
