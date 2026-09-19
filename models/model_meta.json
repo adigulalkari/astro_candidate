@@ -1,1 +1,71 @@
-{"active_model": "sklearn"}
+{
+  "active_model": "xgboost",
+  "trained_in": "google_colab",
+  "num_rows": 14598,
+  "num_positive_labels": 63,
+  "cv_folds_for_search": 5,
+  "cv_average_precision": 0.9934329559329559,
+  "best_params": {
+    "colsample_bytree": 0.7434587125184655,
+    "gamma": 0.12708182453486938,
+    "learning_rate": 0.06610521179959836,
+    "max_depth": 4,
+    "min_child_weight": 1,
+    "n_estimators": 203,
+    "subsample": 0.8788062963981071
+  },
+  "out_of_fold_metrics": {
+    "oof_roc_auc": 0.9999705145215982,
+    "oof_average_precision": 0.9933955050971683,
+    "oof_precision": 0.9253731343283582,
+    "oof_recall": 0.9841269841269841
+  },
+  "high_correlation_feature_pairs": [
+    ["pl_rade", "radius_ratio", 1.0],
+    ["pl_bmasse", "escape_velocity_relative", 0.912],
+    ["pl_orbper", "pl_orbsmax", 0.997],
+    ["pl_orbper", "habitable_zone_position", 0.969],
+    ["pl_dens", "density_relative", 1.0],
+    ["st_teff", "stellar_temperature_normalized", 1.0],
+    ["sy_vmag", "sy_kmag", 0.941],
+    ["temp_similarity", "insol_similarity", 0.94]
+  ],
+  "permutation_importance": {
+    "insol_similarity": 0.04211,
+    "pl_insol": 0.02334,
+    "sy_dist": 0.01851,
+    "radius_similarity": 0.00726,
+    "pl_eqt": 0.00463,
+    "pl_rade": 0.00319,
+    "temp_similarity": 0.0,
+    "radius_ratio": 0.0,
+    "distance_score": 0.0,
+    "st_met": 0.0,
+    "st_mass": 0.0,
+    "habitable_zone_position": 0.0,
+    "escape_velocity_relative": 0.0,
+    "planet_star_radius_ratio": 0.0,
+    "pl_dens": 0.0,
+    "pl_orbper": 0.0,
+    "sy_vmag": 0.0,
+    "pl_bmasse": 0.0,
+    "stellar_temperature_normalized": 0.0,
+    "pl_orbeccen": 0.0,
+    "st_rad": 0.0,
+    "st_lum": 0.0,
+    "hz_distance_au": 0.0,
+    "pl_orbsmax": 0.0,
+    "sy_kmag": 0.0,
+    "st_teff": 0.0,
+    "density_relative": 0.0,
+    "earth_similarity_index": 0.0
+  },
+  "feature_columns": [
+    "pl_rade", "pl_bmasse", "pl_orbper", "pl_orbsmax", "pl_dens", "pl_eqt", "pl_insol",
+    "pl_orbeccen", "st_teff", "st_rad", "st_mass", "st_lum", "st_met", "sy_dist", "sy_vmag",
+    "sy_kmag", "radius_ratio", "temp_similarity", "insol_similarity", "radius_similarity",
+    "distance_score", "stellar_temperature_normalized", "planet_star_radius_ratio",
+    "density_relative", "escape_velocity_relative", "earth_similarity_index",
+    "hz_distance_au", "habitable_zone_position"
+  ]
+}

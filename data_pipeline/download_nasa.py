@@ -13,10 +13,10 @@ def download_nasa_data():
     print("[NASA Ingestion] Querying NASA Exoplanet Archive TAP API...")
     columns = [
         "pl_name", "hostname", "sy_snum", "sy_pnum", "discoverymethod", "disc_year",
-        "pl_orbper", "pl_rade", "pl_radj", "pl_bmasse", "pl_bmassj", "pl_eqt", "pl_insol",
-        "pl_orbeccen", "pl_orbincl", "tran_flag", "rv_flag", "ima_flag", "pl_controv_flag",
-        "pl_pubdate", "st_teff", "st_rad", "st_mass", "st_lum", "st_met", "st_logg", "st_age",
-        "sy_dist", "sy_gaiamag", "sy_vmag", "sy_kmag"
+        "pl_orbper", "pl_orbsmax", "pl_rade", "pl_radj", "pl_bmasse", "pl_bmassj", "pl_dens",
+        "pl_eqt", "pl_insol", "pl_orbeccen", "pl_orbincl", "tran_flag", "rv_flag", "ima_flag",
+        "pl_controv_flag", "pl_pubdate", "st_teff", "st_rad", "st_mass", "st_lum", "st_met",
+        "st_logg", "st_age", "sy_dist", "sy_gaiamag", "sy_vmag", "sy_kmag"
     ]
     query = f"select {','.join(columns)} from pscomppars"
     # URL encode query spaces to +
