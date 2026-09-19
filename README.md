@@ -8,6 +8,20 @@ This full-stack application provides an interactive LLM-powered research agent, 
 
 ![Screenshot](image.png)
 
+## 🎯 The Problem
+
+Exoplanet science has a triage problem: the number of known candidates is growing far faster than the capacity to study any of them in detail.
+
+- **The candidate backlog is large and growing.** TESS alone had catalogued over **7,800 planet candidates by early 2026**, while **fewer than 720** have been independently confirmed — a gap of more than 7,000 unresolved signals that manual, one-by-one vetting was never designed to handle at this scale ([ExoNet, 2026](https://arxiv.org/abs/2604.15560)). This project's data pipeline pulls in exactly that backlog (Kepler KOI + TESS TOI candidates, not just the ~6k confirmed planets) so the ranking model has the full triage problem to work with, not just the already-solved cases.
+- **Follow-up telescope time is scarce and heavily oversubscribed.** JWST's Cycle 5 General Observer call requested **99,782 hours against roughly 8,000 available**, an oversubscription of about **12:1** — and exoplanet atmosphere/habitability science alone accounted for **14% of all approved prime time**, among the most competitive categories on the telescope ([STScI, JWST Cycle 5 Proposal Selection](https://www.stsci.edu/contents/newsletters/2026-volume-43-issue-01/jwst-cycle-5-proposal-selection)). Every hour spent characterizing the wrong candidate is an hour a genuinely promising one doesn't get.
+- **This is why similarity-based ranking already exists as real scientific infrastructure.** NASA's Exoplanet Exploration Program maintains a curated [Target Star Catalog](https://science.nasa.gov/exoplanets/target-star-catalog/) specifically to narrow the search space for the upcoming Habitable Worlds Observatory before it ever launches, and the Planetary Habitability Laboratory's Earth Similarity Index was built explicitly so it "can be used to prioritize exoplanet observations, perform statistical assessments and develop planetary classifications" ([Earth Similarity Index and Habitability Studies of Exoplanets, arXiv:1801.07101](https://arxiv.org/pdf/1801.07101)).
+
+**This project is a smaller-scale, student-built version of that same triage tool**: given NASA's confirmed-planet and candidate catalogs, rank every entry by physical similarity to Earth using a validated ML model, so that limited follow-up attention — human or telescope — goes to the candidates most likely to be worth it. The literature-retrieval component addresses the adjacent problem of keeping up with what's already been published about a given candidate, since the field publishes faster than any one researcher can track manually.
+
+This also means the `ml_score` this project produces should be read the same way the field reads ESI or an HWO target list: a similarity/priority ranking to guide where to look next, not a claim that a planet is confirmed habitable — no dataset of confirmed-habitable exoplanets exists for any model to be validated against.
+
+---
+
 ## 🏗 System Architecture
 
 * **Frontend:** React 18, TypeScript, Vite, Tailwind CSS, Lucide Icons.
